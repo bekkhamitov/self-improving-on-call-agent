@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Self-Improving On-Call Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #000; --line: rgba(255,255,255,.11); --line2: rgba(255,255,255,.22);
+    --text: #f2f2f2; --muted: #8a8a8a; --dim: #4d4d4d;
+    --red: #ff3b30; --amber: #ffb020; --cyan: #4fd1ff; --green: #2fe08a;
+    --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+    --display: 'Inter Tight', 'Helvetica Neue', Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--display); font-size: 13px; overflow: hidden; -webkit-font-smoothing: antialiased; }
+  body {
+    display: grid; grid-template-rows: auto auto 1fr; padding: 0 22px 18px;
+    background-image: linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.028) 1px, transparent 1px);
+    background-size: 48px 48px; background-position: -1px -1px;
+  }
+  body::after { content: ''; position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 0 transparent; transition: box-shadow .5s; z-index: 20; }
+  body.flash-green::after { box-shadow: inset 0 0 0 2px var(--green), inset 0 0 160px rgba(47,224,138,.12); }
+  body.flash-red::after { box-shadow: inset 0 0 0 2px var(--red), inset 0 0 160px rgba(255,59,48,.14); }
+  .lbl, .mono { font-family: var(--mono); }
+
+  /* ---------- top bar ---------- */
+  .topbar { display: flex; align-items: center; justify-content: space-between; height: 34px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+  .topbar .live { display: flex; align-items: center; gap: 8px; color: var(--text); }
+  .topbar .live::before { content: ''; width: 6px; height: 6px; background: var(--red); animation: blink 1.2s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  header { display: grid; grid-template-columns: auto 1fr auto; align-items: end; gap: 34px; padding: 18px 0 16px; border-bottom: 1px solid var(--line); }
+  .brand h1 { font-size: 32px; line-height: .95; font-weight: 700; letter-spacing: -.035em; text-transform: uppercase; }
+  .brand .sub { font-family: var(--mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin-top: 10px; display: flex; gap: 14px; align-items: center; }
+  .status { font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .16em; padding: 3px 8px; border: 1px solid currentColor; display: inline-flex; align-items: center; gap: 7px; }
+  .status::before { content: ''; width: 6px; height: 6px; background: currentColor; animation: blink 1s steps(2) infinite; }
+  .status.ok { color: var(--green); } .status.bad { color: var(--red); } .status.work { color: var(--amber); }
+
+  .kpis { display: flex; justify-content: flex-end; align-items: end; }
+  .kpi { padding: 0 22px; border-left: 1px solid var(--line); min-width: 120px; }
+  .kpi .v { font-size: 38px; font-weight: 300; letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; transition: color .3s; }
+  .kpi .l { font-family: var(--mono); color: var(--muted); font-size: 9.5px; text-transform: uppercase; letter-spacing: .16em; margin-top: 8px; }
+  .kpi.red .v { color: var(--red); } .kpi.green .v { color: var(--text); }
+  button.ship { font: 500 10.5px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--text); background: transparent; border: 1px solid var(--text); padding: 13px 16px; cursor: pointer; white-space: nowrap; transition: all .15s; }
+  button.ship:hover:not(:disabled) { background: var(--text); color: #000; }
+  button.ship:disabled { opacity: .25; cursor: default; }
+
+  /* ---------- grid ---------- */
+  main { display: grid; grid-template-columns: 1.2fr 1.15fr 1fr; grid-template-rows: 1.05fr 1fr; gap: 14px; min-height: 0; padding-top: 14px; }
+  .panel { border: 1px solid var(--line); background: rgba(0,0,0,.72); display: flex; flex-direction: column; min-height: 0; overflow: hidden; position: relative; }
+  .panel::before, .panel::after { content: ''; position: absolute; width: 10px; height: 10px; border-color: var(--text); border-style: solid; pointer-events: none; }
+  .panel::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; }
+  .panel::after { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
+  .panel h2 { font-family: var(--mono); font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .16em; color: var(--text); padding: 11px 14px; display: flex; align-items: center; gap: 10px; flex: none; border-bottom: 1px solid var(--line); }
+  .panel h2 .ix { color: var(--dim); }
+  .panel h2 .r { margin-left: auto; color: var(--muted); letter-spacing: .1em; }
+  .body { flex: 1; min-height: 0; padding: 12px 14px 14px; overflow: hidden; display: flex; flex-direction: column; gap: 12px; }
+
+  /* traffic */
+  .chartwrap { flex: 1.15; min-height: 0; position: relative; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .bigrate { position: absolute; top: 0; left: 0; pointer-events: none; }
+  .bigrate b { font-size: 54px; font-weight: 300; letter-spacing: -.05em; line-height: 1; font-variant-numeric: tabular-nums; transition: color .4s; }
+  .bigrate span { display: block; font-family: var(--mono); color: var(--muted); font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; margin-top: 6px; }
+  .dots { flex: 1; min-height: 0; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 3px; overflow: hidden; border-top: 1px solid var(--line); padding-top: 10px; }
+  .dots i { width: 8px; height: 8px; background: rgba(255,255,255,.5); animation: pop .3s ease-out; }
+  .dots i.w { background: rgba(255,255,255,.14); }
+  .dots i.e { background: var(--red); box-shadow: 0 0 8px rgba(255,59,48,.85); }
+  @keyframes pop { from { filter: brightness(2.2); } }
+  .legend { display: flex; gap: 14px; color: var(--muted); }
+  .legend i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; vertical-align: 0; }
+
+  /* agent */
+  .pipeline { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; flex: none; }
+  .stage { border: 1px solid var(--line); padding: 7px 8px 8px; position: relative; overflow: hidden; transition: all .25s; }
+  .stage .num { font-family: var(--mono); font-size: 9px; color: var(--dim); letter-spacing: .12em; }
+  .stage .t { font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .14em; color: var(--muted); text-transform: uppercase; margin-top: 3px; }
+  .stage.done { border-color: var(--line2); } .stage.done .t { color: var(--text); } .stage.done .num { color: var(--green); }
+  .stage.active { border-color: var(--amber); background: rgba(255,176,32,.08); }
+  .stage.active .t, .stage.active .num { color: var(--amber); }
+  .stage.active::after { content: ''; position: absolute; left: 0; bottom: 0; height: 2px; width: 40%; background: var(--amber); animation: scan 1.1s linear infinite; }
+  @keyframes scan { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+  .watching { font-family: var(--mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 10px; flex: none; }
+  .watching::before { content: ''; width: 6px; height: 6px; background: var(--green); animation: blink 1.4s steps(2) infinite; }
+  .term { flex: 1; min-height: 0; overflow-y: auto; font-family: var(--mono); font-size: 11.5px; line-height: 1.6; border-top: 1px solid var(--line); padding-top: 8px; }
+  .term::-webkit-scrollbar { width: 0; }
+  .t { display: grid; grid-template-columns: 62px 1fr; gap: 10px; animation: type .25s ease-out; }
+  .t .ts { color: var(--dim); }
+  .t .tx { white-space: pre-wrap; word-break: break-word; color: #bdbdbd; }
+  .t.alert .tx { color: var(--red); } .t.success .tx { color: var(--green); } .t.memory .tx { color: var(--cyan); }
+  .t.tool .tx { color: var(--amber); } .t.claude .tx { color: #e6e6e6; } .t.human .tx { color: var(--text); background: rgba(255,255,255,.08); }
+  @keyframes type { from { background-color: rgba(255,255,255,.09); } }
+
+  /* incidents */
+  .list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .list::-webkit-scrollbar { width: 0; }
+  .inc { border: 1px solid var(--line); border-left: 2px solid var(--red); padding: 10px 12px; animation: type .3s; }
+  .inc.fixed { border-left-color: var(--green); opacity: .9; }
+  .inc.diagnosing, .inc.patching, .inc.verifying, .inc.reviewing { border-color: rgba(255,176,32,.5); border-left-color: var(--amber); background: rgba(255,176,32,.05); }
+  .inc.failed { border-left-color: var(--muted); }
+  .row1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--mono); }
+  .inc .id { font-family: var(--display); font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+  .chip { font-size: 9px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; padding: 2px 6px; border: 1px solid currentColor; color: var(--red); }
+  .chip.fixed { color: var(--green); }
+  .chip.diagnosing, .chip.patching, .chip.verifying, .chip.reviewing { color: var(--amber); }
+  .chip.failed { color: var(--muted); }
+  .chip.mem { color: var(--cyan); }
+  .file { margin-left: auto; font-size: 10.5px; color: var(--muted); }
+  .msg { font-family: var(--mono); font-size: 11px; margin: 8px 0 6px; color: #d9d9d9; }
+  .meta { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .meta b { color: var(--text); font-weight: 500; }
+  .replay { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-family: var(--mono); font-size: 10.5px; border-top: 1px dashed var(--line); padding-top: 7px; color: var(--muted); }
+  .replay code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; color: #bdbdbd; }
+  .replay .b { color: var(--red); text-decoration: line-through; }
+  .replay .a.ok { color: var(--green); font-weight: 600; } .replay .a.bad { color: var(--red); font-weight: 600; }
+  .fixedline { margin-top: 6px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+  .fixedline b { color: var(--green); font-weight: 600; }
+  .fixedline code { color: var(--text); }
+  .empty { font-family: var(--mono); color: var(--dim); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; text-align: center; margin: auto; line-height: 1.9; }
+
+  /* diff */
+  .diffhead { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; color: var(--muted); flex: none; }
+  .diffhead b { color: var(--text); font-weight: 500; }
+  pre.diff { flex: 1; min-height: 0; overflow: auto; border-top: 1px solid var(--line); padding: 8px 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.65; }
+  pre.diff div { padding: 0 8px; white-space: pre; }
+  pre.diff .add { background: rgba(47,224,138,.1); color: #7cf0b5; box-shadow: inset 2px 0 0 var(--green); }
+  pre.diff .del { background: rgba(255,59,48,.1); color: #ff8a82; box-shadow: inset 2px 0 0 var(--red); }
+  pre.diff .hunk { color: var(--cyan); }
+  pre.diff .ctx { color: #6b6b6b; }
+  pre.diff.fresh { animation: glow 1.8s ease-out; }
+  @keyframes glow { from { background: rgba(47,224,138,.12); } to { background: transparent; } }
+
+  /* memory */
+  .lessons { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .lessons::-webkit-scrollbar { width: 0; }
+  .lesson { display: grid; grid-template-columns: 46px 1fr; gap: 10px; border-left: 2px solid var(--cyan); padding: 6px 10px; font-size: 12.5px; line-height: 1.45; background: rgba(79,209,255,.04); animation: type .3s; }
+  .lesson .k { font-family: var(--mono); font-size: 10px; color: var(--cyan); letter-spacing: .1em; padding-top: 2px; }
+  .lesson.new { animation: memglow 2.2s ease-out; }
+  @keyframes memglow { from { background: rgba(79,209,255,.25); } }
+  .ttf { flex: none; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .ttf .lbl { font-size: 9.5px; text-transform: uppercase; letter-spacing: .16em; color: var(--muted); }
+  .bar { display: grid; grid-template-columns: 110px 1fr 52px; align-items: center; gap: 10px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+  .bar .track { height: 6px; background: rgba(255,255,255,.06); }
+  .bar .fill { height: 100%; background: var(--text); transition: width .8s; }
+  .bar .s { color: var(--text); text-align: right; }
+
+  /* repo */
+  .commits { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+  .commit { display: grid; grid-template-columns: 54px 64px 1fr; gap: 10px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; animation: type .3s; }
+  .commit .av { font-family: var(--mono); font-size: 9px; letter-spacing: .12em; padding: 2px 0; text-align: center; border: 1px solid var(--line2); color: var(--muted); }
+  .commit.agent .av { color: var(--green); border-color: var(--green); }
+  .commit .h { font-family: var(--mono); color: var(--muted); }
+  .commit .s { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .commit .a { font-family: var(--mono); color: var(--dim); font-size: 10px; letter-spacing: .06em; margin-top: 2px; }
+
+  /* banners */
+  #toasts { position: fixed; top: 128px; left: 22px; right: 22px; display: flex; flex-direction: column; gap: 6px; z-index: 30; pointer-events: none; }
+  .toast { padding: 14px 20px; background: rgba(0,0,0,.92); border: 1px solid; display: flex; align-items: baseline; gap: 22px; animation: wipe .45s cubic-bezier(.2,.8,.2,1); transition: opacity .5s; backdrop-filter: blur(6px); }
+  .toast b { font-size: 26px; font-weight: 700; letter-spacing: -.02em; text-transform: uppercase; white-space: nowrap; }
+  .toast span { color: var(--muted); font-size: 11px; font-family: var(--mono); letter-spacing: .06em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toast.red { border-color: var(--red); } .toast.red b { color: var(--red); }
+  .toast.green { border-color: var(--green); } .toast.green b { color: var(--green); }
+  .toast.amber { border-color: var(--text); } .toast.amber b { color: var(--text); }
+  .toast.out { opacity: 0; }
+  @keyframes wipe { from { transform: translateY(-8px); } }
+  header { grid-template-columns: auto minmax(0, 1fr) auto; }
+  @media (max-width: 1400px) {
+    .kpi { padding: 0 14px; min-width: 0; } .kpi .v { font-size: 30px; } .brand h1 { font-size: 26px; }
+    .brand .sub { flex-direction: column; align-items: flex-start; gap: 6px; }
+  }
+  @media (max-width: 1150px) { .kpi:nth-child(5), .kpi:nth-child(6) { display: none; } main { grid-template-columns: 1fr 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="live">Live · Production</span>
+  <span id="model">Agent model: –</span>
+  <span id="clock">--:--:--</span>
+</div>
+<header>
+  <div class="brand">
+    <h1>Self-Improving<br/>On-Call Agent</h1>
+    <div class="sub"><span id="status" class="status ok">WATCHING</span> Reads prod logs · patches · verifies · learns · no human in the loop</div>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><div class="v" id="k-rps">0</div><div class="l">Req / sec</div></div>
+    <div class="kpi" id="kpi-err"><div class="v" id="k-err">0%</div><div class="l">Error rate</div></div>
+    <div class="kpi green"><div class="v" id="k-fixed">0</div><div class="l">Fixes shipped</div></div>
+    <div class="kpi"><div class="v" id="k-ttf">–</div><div class="l">Avg time to fix</div></div>
+    <div class="kpi"><div class="v" id="k-mem">0</div><div class="l">Lessons learned</div></div>
+    <div class="kpi"><div class="v">0</div><div class="l">Human prompts</div></div>
+  </div>
+  <button class="ship" id="ship">Ship human feature →</button>
+</header>
+
+<main>
+  <section class="panel">
+    <h2><span class="ix">01</span> Production traffic <span class="r legend"><span><i style="background:rgba(255,255,255,.5)"></i>2XX</span><span><i style="background:rgba(255,255,255,.14)"></i>4XX</span><span><i style="background:var(--red)"></i>5XX</span></span></h2>
+    <div class="body">
+      <div class="chartwrap"><canvas id="chart"></canvas><div class="bigrate"><b id="bigrate">0.0%</b><span>Error rate · trailing 10s</span></div></div>
+      <div class="dots" id="dots"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2><span class="ix">02</span> Agent <span class="r" id="agentstate">Idle</span></h2>
+    <div class="body">
+      <div class="pipeline" id="pipeline"></div>
+      <div class="term" id="term"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2><span class="ix">03</span> Incidents <span class="r" id="inc-count"></span></h2>
+    <div class="body"><div class="list" id="incidents"><div class="empty">No incidents<br/>Monitoring production</div></div></div>
+  </section>
+
+  <section class="panel">
+    <h2><span class="ix">04</span> Patch <span class="r">Authored by agent</span></h2>
+    <div class="body">
+      <div class="diffhead" id="diffhead">NO PATCH YET</div>
+      <pre class="diff" id="diff"></pre>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2><span class="ix">05</span> Memory <span class="r">Self-written playbook</span></h2>
+    <div class="body">
+      <div class="lessons" id="lessons"><div class="empty">Memory empty<br/>Every fix teaches it something</div></div>
+      <div class="ttf" id="ttf"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2><span class="ix">06</span> Repository <span class="r">app/ · git log</span></h2>
+    <div class="body"><div class="commits" id="commits"></div></div>
+  </section>
+</main>
+<div id="toasts"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour12: false });
+const pad = (n) => String(n).padStart(3, '0');
+const S = { incidents: new Map(), memory: [], reqs: [], markers: [], stage: 'watching', activeId: null, newLesson: -1 };
+
+// ---------- traffic ----------
+const dots = $('#dots');
+let maxDots = 300;
+function sizeDots() {
+  const w = dots.clientWidth, h = dots.clientHeight - 10;
+  maxDots = Math.max(40, Math.floor((w + 3) / 11) * Math.floor((h + 3) / 11));
+}
+function addDot(status) {
+  const d = document.createElement('i');
+  if (status >= 500) d.className = 'e'; else if (status >= 400) d.className = 'w';
+  dots.appendChild(d);
+  while (dots.children.length > maxDots) dots.firstChild.remove();
+}
+function onRequest(r) {
+  S.reqs.push(r);
+  if (S.reqs.length > 3000) S.reqs.splice(0, S.reqs.length - 3000);
+  addDot(r.status);
+}
+function rates(now = Date.now()) {
+  const w10 = S.reqs.filter((r) => r.ts > now - 10000);
+  const w5 = w10.filter((r) => r.ts > now - 5000);
+  const err = w10.filter((r) => r.status >= 500).length;
+  return { rps: w5.length / 5, err: w10.length ? (100 * err) / w10.length : 0 };
+}
+
+const canvas = $('#chart'), ctx = canvas.getContext('2d');
+const WINDOW = 120;
+function drawChart() {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) { canvas.width = W * dpr; canvas.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const now = Date.now(), nowSec = Math.floor(now / 1000);
+  const top = 78, bot = H - 14, ph = Math.max(10, bot - top);
+  const bucket = new Map();
+  for (const r of S.reqs) {
+    const s = Math.floor(r.ts / 1000);
+    if (s <= nowSec - WINDOW) continue;
+    const b = bucket.get(s) || { t: 0, e: 0 }; b.t++; if (r.status >= 500) b.e++; bucket.set(s, b);
+  }
+  const x = (sec) => ((sec - (nowSec - WINDOW)) / WINDOW) * W;
+  ctx.font = '9px IBM Plex Mono, monospace';
+  ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 1;
+  for (const p of [0, .5, 1]) { const y = Math.round(bot - p * ph) + .5; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.fillStyle = '#4d4d4d';
+  ctx.fillText('50%', W - 24, bot - ph - 4); ctx.fillText('25%', W - 24, bot - ph / 2 - 4); ctx.fillText('T-120S', 0, H - 2); ctx.fillText('NOW', W - 20, H - 2);
+  for (let s = 0; s <= WINDOW; s += 10) { const tx = Math.round(x(nowSec - WINDOW + s)) + .5; ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.fillRect(tx, bot, 1, 4); }
+  let maxT = 1; for (const b of bucket.values()) maxT = Math.max(maxT, b.t);
+  const bw = Math.max(1, W / WINDOW - 2);
+  for (const [s, b] of bucket) { const h = (b.t / maxT) * ph * 0.3; ctx.fillStyle = 'rgba(255,255,255,.07)'; ctx.fillRect(x(s), bot - h, bw, h); }
+  const pts = [];
+  for (let s = nowSec - WINDOW + 1; s <= nowSec; s++) {
+    let t = 0, e = 0;
+    for (let k = s - 4; k <= s; k++) { const b = bucket.get(k); if (b) { t += b.t; e += b.e; } }
+    pts.push([x(s), bot - Math.min(1, (t ? e / t : 0) / 0.5) * ph]);
+  }
+  const grad = ctx.createLinearGradient(0, top, 0, bot);
+  grad.addColorStop(0, 'rgba(255,59,48,.35)'); grad.addColorStop(1, 'rgba(255,59,48,0)');
+  ctx.beginPath(); ctx.moveTo(pts[0][0], bot); for (const [px, py] of pts) ctx.lineTo(px, py); ctx.lineTo(pts[pts.length - 1][0], bot); ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.beginPath(); pts.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+  ctx.strokeStyle = '#ff3b30'; ctx.lineWidth = 1.5; ctx.stroke();
+  const [lx, ly] = pts[pts.length - 1];
+  ctx.fillStyle = '#ff3b30'; ctx.fillRect(lx - 3, ly - 3, 6, 6);
+  for (const m of S.markers) {
+    const s = m.ts / 1000; if (s < nowSec - WINDOW) continue;
+    const mx = Math.round(x(s)) + .5;
+    const col = m.kind === 'fix' ? '#2fe08a' : m.kind === 'human' ? '#f2f2f2' : '#ff3b30';
+    ctx.strokeStyle = col; ctx.globalAlpha = m.kind === 'inc' ? .55 : 1;
+    ctx.setLineDash(m.kind === 'fix' ? [] : [2, 3]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(mx, top - 12); ctx.lineTo(mx, bot); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.font = '600 9px IBM Plex Mono, monospace';
+    const label = m.label; const tw = ctx.measureText(label).width;
+    const ly2 = m.kind === 'fix' ? top - 2 : m.kind === 'human' ? top + 22 : top + 10;
+    const lx2 = Math.min(mx + 4, W - tw - 4);
+    ctx.fillStyle = '#000'; ctx.fillRect(lx2 - 2, ly2 - 9, tw + 4, 12);
+    ctx.fillStyle = col; ctx.fillText(label, lx2, ly2);
+  }
+}
+
+// ---------- agent ----------
+const STAGES = ['detect', 'diagnose', 'patch', 'verify', 'review', 'deploy'];
+function renderStage() {
+  const cur = STAGES.indexOf(S.stage);
+  $('#pipeline').innerHTML = STAGES.map((k, i) => {
+    const cls = cur < 0 ? '' : i < cur ? 'done' : i === cur ? 'active' : '';
+    return `<div class="stage ${cls}"><div class="num">0${i + 1}${i < cur && cur >= 0 ? ' ✓' : ''}</div><div class="t">${k}</div></div>`;
+  }).join('');
+  $('#agentstate').textContent = cur < 0 ? 'Watching logs' : `Working · INC-${pad(S.activeId || 0)}`;
+  $('#agentstate').style.color = cur < 0 ? '' : 'var(--amber)';
+}
+const term = $('#term');
+function addThought(t) {
+  const row = document.createElement('div');
+  row.className = 't ' + t.kind;
+  row.innerHTML = `<span class="ts">${clock(t.ts)}</span><span class="tx">${esc(t.text)}</span>`;
+  term.appendChild(row);
+  while (term.children.length > 250) term.firstChild.remove();
+  term.scrollTop = term.scrollHeight;
+}
+
+// ---------- incidents ----------
+const LABEL = { queued: 'Open', diagnosing: 'Investigating', patching: 'Patching', verifying: 'Verifying', reviewing: 'In review', fixed: 'Resolved', failed: 'Escalated' };
+function renderIncidents() {
+  const list = [...S.incidents.values()].sort((a, b) => {
+    const rank = (i) => (['diagnosing', 'patching', 'verifying', 'reviewing'].includes(i.status) ? 0 : i.status === 'queued' ? 1 : 2);
+    return rank(a) - rank(b) || b.id - a.id;
+  });
+  $('#inc-count').textContent = list.length ? `${list.filter((i) => i.status === 'fixed').length} / ${list.length} resolved` : '';
+  if (!list.length) return;
+  $('#incidents').innerHTML = list.map((i) => {
+    const okReplay = i.replay && i.replay.after > 0 && i.replay.after < 500;
+    return `<div class="inc ${i.status}">
+      <div class="row1"><span class="id">INC-${pad(i.id)}</span><span class="chip ${i.status}">${LABEL[i.status] || i.status}</span>${i.recognized ? '<span class="chip mem">Pattern recognized</span>' : ''}${i.regressions ? '<span class="chip">Regression</span>' : ''}<span class="file">${esc(i.file)}:${i.line ?? ''}</span></div>
+      <div class="msg">${esc(i.message)}</div>
+      <div class="meta"><b>${i.count}</b> failed requests · <b>${i.users.length}</b> users affected</div>
+      ${i.replay ? `<div class="replay">REPLAY <code>${esc(i.request.method)} ${esc(i.request.path)}</code><span class="b">500</span>→<span class="a ${okReplay ? 'ok' : 'bad'}">${i.replay.after || 'ERR'} ${okReplay ? '✓' : '✗'}</span></div>` : ''}
+      ${i.review ? `<div class="fixedline">REVIEW · <b style="color:${i.review.verdict === 'APPROVE' ? 'var(--green)' : 'var(--red)'}">${esc(i.review.by)} ${esc(i.review.verdict)}</b> · ${esc(i.review.reason)}</div>` : ''}
+      ${i.status === 'fixed' ? `<div class="fixedline">RESOLVED AUTONOMOUSLY IN <b>${(i.ttf / 1000).toFixed(1)}S</b> · <code>${esc(i.commit)}</code></div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ---------- diff ----------
+function renderDiff(inc, fresh) {
+  if (!inc || !inc.diff) return;
+  const files = [...inc.diff.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]).join(', ');
+  $('#diffhead').innerHTML = `INC-${pad(inc.id)} · <b>${esc(files || inc.file)}</b> · ${inc.status === 'fixed' ? 'DEPLOYED <b>' + esc(inc.commit) + '</b>' : 'VERIFYING…'}`;
+  const lines = inc.diff.split('\n').filter((l) => !/^(diff --git|index |--- |\+\+\+ |new file mode)/.test(l));
+  const el = $('#diff');
+  el.innerHTML = lines.map((l) => {
+    const c = l.startsWith('+') ? 'add' : l.startsWith('-') ? 'del' : l.startsWith('@@') ? 'hunk' : 'ctx';
+    return `<div class="${c}">${esc(l) || ' '}</div>`;
+  }).join('');
+  if (fresh) { el.classList.remove('fresh'); void el.offsetWidth; el.classList.add('fresh'); }
+}
+
+// ---------- memory ----------
+function renderMemory() {
+  $('#k-mem').textContent = S.memory.length;
+  if (S.memory.length) {
+    $('#lessons').innerHTML = S.memory.map((m, i) => `<div class="lesson ${i === S.newLesson ? 'new' : ''}"><span class="k">L-${String(i + 1).padStart(2, '0')}</span><span>${esc(m.lesson)}</span></div>`).reverse().join('');
+  }
+  const fixed = [...S.incidents.values()].filter((i) => i.status === 'fixed').sort((a, b) => a.fixedAt - b.fixedAt);
+  if (!fixed.length) { $('#ttf').innerHTML = ''; return; }
+  const max = Math.max(...fixed.map((i) => i.ttf));
+  $('#ttf').innerHTML = `<div class="lbl">Time to fix · in order of resolution</div>` + fixed.map((i) =>
+    `<div class="bar"><span>INC-${pad(i.id)} ${esc(i.file.replace('routes/', '').replace('.js', ''))}</span><div class="track"><div class="fill" style="width:${Math.max(3, (100 * i.ttf) / max)}%"></div></div><span class="s">${(i.ttf / 1000).toFixed(1)}s</span></div>`
+  ).join('');
+}
+
+// ---------- repo ----------
+function ago(ts) { const s = Math.round((Date.now() - ts) / 1000); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; }
+let lastCommits = [];
+function renderCommits(c) {
+  if (c) lastCommits = c;
+  $('#commits').innerHTML = lastCommits.map((x) => {
+    const agent = /agent/i.test(x.author);
+    return `<div class="commit ${agent ? 'agent' : ''}"><span class="av">${agent ? 'AGENT' : 'HUMAN'}</span><span class="h">${esc(x.hash)}</span><div><div class="s">${esc(x.subject)}</div><div class="a">${esc(x.author)} · ${ago(x.ts)}</div></div></div>`;
+  }).join('');
+}
+
+// ---------- KPIs / status ----------
+function renderKpis() {
+  const { rps, err } = rates();
+  $('#k-rps').textContent = rps.toFixed(1);
+  $('#k-err').textContent = err.toFixed(1) + '%';
+  $('#bigrate').textContent = err.toFixed(1) + '%';
+  $('#bigrate').style.color = err > 0.5 ? 'var(--red)' : 'var(--text)';
+  $('#kpi-err').className = 'kpi ' + (err > 0.5 ? 'red' : '');
+  const fixed = [...S.incidents.values()].filter((i) => i.status === 'fixed');
+  $('#k-fixed').textContent = fixed.length;
+  $('#k-ttf').textContent = fixed.length ? (fixed.reduce((s, i) => s + i.ttf, 0) / fixed.length / 1000).toFixed(1) + 's' : '–';
+  const st = $('#status');
+  if (S.stage !== 'watching') { st.className = 'status work'; st.textContent = 'AGENT ENGAGED'; }
+  else if (err > 0.5) { st.className = 'status bad'; st.textContent = 'INCIDENT'; }
+  else { st.className = 'status ok'; st.textContent = 'NOMINAL'; }
+  $('#clock').textContent = new Date().toLocaleTimeString([], { hour12: false }) + ' LOCAL';
+}
+
+// ---------- banners ----------
+function toast(kind, title, sub) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind;
+  el.innerHTML = `<b>${esc(title)}</b><span>${esc(sub)}</span>`;
+  $('#toasts').appendChild(el);
+  while ($('#toasts').children.length > 2) $('#toasts').firstChild.remove();
+  setTimeout(() => el.classList.add('out'), 3800);
+  setTimeout(() => el.remove(), 4400);
+}
+function flash(kind) { document.body.classList.add('flash-' + kind); setTimeout(() => document.body.classList.remove('flash-' + kind), 900); }
+
+// ---------- events ----------
+const H = {
+  snapshot(ev) {
+    S.incidents = new Map(ev.incidents.map((i) => [i.id, i]));
+    S.memory = ev.memory; S.stage = ev.stage; S.activeId = ev.activeId;
+    S.reqs = []; dots.innerHTML = ''; ev.requests.forEach(onRequest);
+    S.markers = [];
+    for (const i of ev.incidents) {
+      S.markers.push({ ts: i.detectedAt, kind: 'inc', label: `INC-${pad(i.id)}` });
+      if (i.fixedAt) S.markers.push({ ts: i.fixedAt, kind: 'fix', label: `FIX ${pad(i.id)}` });
+    }
+    term.innerHTML = ''; ev.thoughts.forEach(addThought);
+    $('#model').textContent = 'Agent model: claude code / ' + ev.model;
+    const withDiff = [...S.incidents.values()].filter((i) => i.diff).pop();
+    renderDiff(withDiff); renderStage(); renderIncidents(); renderMemory(); renderCommits(ev.commits);
+    $('#ship').disabled = ev.commits.some((c) => /wishlist/.test(c.subject));
+  },
+  request(ev) { onRequest(ev); },
+  thought(ev) { addThought(ev); },
+  stage(ev) { S.stage = ev.stage; S.activeId = ev.activeId; renderStage(); renderKpis(); },
+  incident(ev) {
+    const prev = S.incidents.get(ev.incident.id);
+    S.incidents.set(ev.incident.id, ev.incident);
+    if (ev.incident.diff && (!prev || !prev.diff)) renderDiff(ev.incident, false);
+    renderIncidents();
+  },
+  alert(ev) {
+    const i = ev.incident;
+    S.markers.push({ ts: ev.ts, kind: 'inc', label: `INC-${pad(i.id)}` });
+    toast('red', `Incident INC-${pad(i.id)} detected`, `${i.message} · ${i.file}`);
+    flash('red');
+  },
+  fixed(ev) {
+    const i = ev.incident;
+    S.incidents.set(i.id, i);
+    S.markers.push({ ts: ev.ts, kind: 'fix', label: `FIX ${pad(i.id)}` });
+    renderDiff(i, true); renderIncidents(); renderMemory();
+    toast('green', `Patch deployed · INC-${pad(i.id)}`, `${i.file} · resolved in ${(i.ttf / 1000).toFixed(1)}s · replay ${i.replay.after} ✓ · no human involved`);
+    flash('green');
+  },
+  memory(ev) { S.memory = ev.memory; S.newLesson = ev.memory.length - 1; renderMemory(); },
+  commits(ev) { renderCommits(ev.commits); },
+};
+function connect() {
+  const es = new EventSource('/events');
+  es.onmessage = (m) => { const ev = JSON.parse(m.data); (H[ev.type] || (() => {}))(ev); };
+  es.onerror = () => { es.close(); setTimeout(connect, 1500); };
+}
+
+$('#ship').onclick = async () => {
+  $('#ship').disabled = true;
+  const r = await fetch('/api/ship-feature', { method: 'POST' }).then((x) => x.json());
+  if (r.ok) {
+    S.markers.push({ ts: Date.now(), kind: 'human', label: 'HUMAN DEPLOY' });
+    toast('amber', 'Human deployed new feature', 'feat: wishlist page → GET /api/wishlist/:userId');
+  }
+};
+
+window.addEventListener('resize', sizeDots);
+sizeDots(); renderStage(); connect();
+setInterval(renderKpis, 500);
+setInterval(drawChart, 250);
+setInterval(() => renderCommits(), 10000);
+</script>
+</body>
+</html>

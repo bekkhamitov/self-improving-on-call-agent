@@ -1,0 +1,6 @@
+app/
+agent/memory.json
+node_modules/
+logs/
+.DS_Store
+.env

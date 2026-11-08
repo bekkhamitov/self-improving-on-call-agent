@@ -1,0 +1,16 @@
+{
+  "users": [
+    { "id": "u1", "name": "Alice", "tier": "gold", "joined": "2024-02-01" },
+    { "id": "u2", "name": "Bob", "tier": "silver", "joined": "2024-06-12" },
+    { "id": "u3", "name": "Carol", "tier": "gold", "joined": "2025-01-20" },
+    { "id": "u4", "name": "Dave", "tier": "bronze", "joined": "2025-08-03" }
+  ],
+  "products": [
+    { "id": "p1", "name": "Desk Lamp", "price": 39.0 },
+    { "id": "p2", "name": "Coffee Mug", "price": 12.5 },
+    { "id": "p3", "name": "Standing Desk", "price": 499.0 },
+    { "id": "p4", "name": "Mechanical Keyboard", "price": 129.0 }
+  ],
+  "coupons": { "SAVE10": { "percent": 10 }, "WELCOME": { "percent": 15 } },
+  "wishlists": { "u1": { "items": ["p1", "p4"] }, "u2": { "items": ["p2"] } }
+}
